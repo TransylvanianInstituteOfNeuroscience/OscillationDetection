@@ -1,28 +1,19 @@
 import math
-import sys
-
 import random
 
 import numpy as np
 import warnings
 
-from scipy.spatial.distance import cdist
 from sklearn.preprocessing import LabelEncoder
-from skspatial.objects import Plane
 
 from common.distance import euclidean_point_distance, euclidean_point_distance_scale
-from common.geometry import plane_from_points, point_to_plane_distance, line_from_two_points, point_to_line_distance, \
-    plane_from_three_points, perpendicular_plane_from_plane_and_two_points
 from common.maxima import check_maxima_no_neighbour_maxim, check_maxima
 from common.neighbourhood import get_valid_neighbours
-
-sys.setrecursionlimit(1000000)
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
-def cluster_center_bfs(data, threshold, gravitational_pull, scale, disambig="no", merging="no"):
-
+def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disambig="no", merging="no"):
     clusterCenters = find_cluster_centers_no_neighbours(data, threshold=threshold)
 
     pairs = []
@@ -31,7 +22,6 @@ def cluster_center_bfs(data, threshold, gravitational_pull, scale, disambig="no"
 
     pairs = np.array(pairs)
 
-    # clusterCenters = sorted_pairs[:, 0]
     cc_info = []
     sorted_pairs = pairs[pairs[:, 1].argsort()][::-1]
     for pair in sorted_pairs:
@@ -41,28 +31,13 @@ def cluster_center_bfs(data, threshold, gravitational_pull, scale, disambig="no"
         cc_info.append(test)
 
 
-
-
-
     labelsMatrix = np.zeros_like(data, dtype=int)
     for index in range(len(cc_info)):
         point = cc_info[index]['coordinates']
         if labelsMatrix[point] != 0:
             continue  # cluster was already discovered
-        labelsMatrix = expand_cluster_center(data, point, labelsMatrix, index+1, cc_info,
+        labelsMatrix = expand_cluster_center(data, point, labelsMatrix, index+1, cc_info, expansion_factor,
                                              scale=scale, disambig=disambig)
-
-    if merging == 'yes':
-        cc_info, labelsMatrix = merge_labels(cc_info, data, labelsMatrix, scale, gravitational_pull)
-
-
-    le = LabelEncoder()
-    labelsMatrix = le.fit_transform(labelsMatrix.reshape(-1, 1))
-    labelsMatrix = labelsMatrix.reshape(data.shape)
-
-
-
-
 
 
     for id, cc in enumerate(cc_info):
@@ -78,16 +53,36 @@ def cluster_center_bfs(data, threshold, gravitational_pull, scale, disambig="no"
                     break
         cc_info[id]['contour'] = contour
 
-
     for id, cc in enumerate(cc_info):
         center = cc['coordinates']
         center_point = [center[0], center[1], data[center]]
+
         points3D = []
         points2D = cc['contour']
         for point in points2D:
             points3D.append([point[0], point[1], data[point]])
 
         cc_info[id]['prominence'] = cc_info[id]['peak'] - np.amax(np.array(points3D)[:, 2])
+
+    if merging == 'yes':
+        cc_info, labelsMatrix = merge_labels(cc_info, data, labelsMatrix, scale, gravitational_pull)
+
+
+    le = LabelEncoder()
+    labelsMatrix = le.fit_transform(labelsMatrix.reshape(-1, 1))
+    labelsMatrix = labelsMatrix.reshape(data.shape)
+
+
+    for i in range(len(cc_info)):
+        if cc_info[i]['parent'] == -1:
+            print("Center Coords:", cc_info[i]['coordinates'])
+            print("Peak Value:", cc_info[i]['peak'])
+            print(f"Prominence : {cc_info[i]['prominence'] :.2f}")
+            print("Parent Cluster:", cc_info[i]['parent'])
+            print("Start Label:", cc_info[i]['start_label'])
+            print("Finish Label:", cc_info[i]['finish_label'])
+            print()
+            print()
 
 
     label_list = list(range(1, len(np.unique(labelsMatrix))))
@@ -97,7 +92,6 @@ def cluster_center_bfs(data, threshold, gravitational_pull, scale, disambig="no"
     for id, label in enumerate(np.unique(labelsMatrix)[1:]):
         newLabelsMatrix[labelsMatrix == label] = label_list[id]
 
-
     return newLabelsMatrix, cc_info
 
 
@@ -106,10 +100,14 @@ def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
     for i in range(len(cc_info)):
         current_center = cc_info[i]['coordinates']
         current_label = cc_info[i]['finish_label']
+        current_prom = cc_info[i]['prominence']
 
+        conflicting_centers = []
         for conflict_center_str in list(cc_info[i]['zconflicts'].keys()):
             conflict_center = eval(conflict_center_str)
             conflict_label = labels[conflict_center]
+
+            conflict_prominence = cc_info[conflict_label-1]['prominence']
 
             c1_pull_sum = 0
             c2_pull_sum = 0
@@ -133,7 +131,6 @@ def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
                 cc_info[conflict_label - 1]['parent'] = cc_info[i]['coordinates']
                 cc_info[conflict_label - 1]['finish_label'] = current_label
 
-
             elif c1_pull_sum*G_PULL < c2_pull_sum:
                 labels[labels == current_label] = conflict_label
 
@@ -145,11 +142,13 @@ def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
 
 
 def find_supreme_parent(cc_info, i):
-    while (cc_info[i]['parent'] != -1):
+
+    while cc_info[i]['parent'] != -1:
         for id, cc in enumerate(cc_info):
             if cc_info[i]['parent'] == cc['coordinates']:
                 i = id
                 break
+
     return i
 
 
@@ -220,7 +219,7 @@ def get_strength(ndArray, clusterCenter, questionPoint):
     return strength
 
 
-def expand_cluster_center(array, start, labels, currentLabel, cc_info, scale, disambig="no"):  # TODO
+def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion_factor, scale, disambig="no"):  # TODO
     """
     Expansion
     :param array: matrix - an array of the values in each chunk
@@ -246,12 +245,14 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, scale, di
             cc_index = id
             break
 
+    dropoff = get_dropoff(array, start)
 
     conflicts = {}
     points = []
     cc_info[cc_index]['parent'] = -1
     cc_info[cc_index]['start_label'] = currentLabel
     cc_info[cc_index]['finish_label'] = currentLabel
+
     while expansionQueue:
         point = expansionQueue.pop(0)
         points.append(tuple(point))
@@ -260,9 +261,9 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, scale, di
         for neighbour in neighbours:
             location = tuple(neighbour)
 
-            number = get_dropoff(array, location) * math.sqrt(euclidean_point_distance_scale(start, location, scale))
+            number = dropoff * euclidean_point_distance_scale(start, location, scale)
 
-            if (not visited[location]) and (number  < array[location] <= array[point]):
+            if (not visited[location]) and (number * expansion_factor  < array[location] <= array[point]):
                 visited[location] = True
                 if labels[location] == currentLabel:
                     expansionQueue.append(location)
@@ -282,7 +283,6 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, scale, di
                     if disambig=="yes":
                         disRez = disambiguate(array,
                                               location,
-                                              point,
                                               cc_info[currentLabel - 1]['coordinates'],
                                               cc_info[oldLabel - 1]['coordinates'],
                                               scale)
@@ -300,19 +300,17 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, scale, di
     return labels
 
 
-def disambiguate(array, questionPoint, expansionPoint, clusterCenter1, clusterCenter2, scale):
+def disambiguate(array, questionPoint, clusterCenter1, clusterCenter2, scale):
     """
     Disambiguation of the cluster of a chunk based on the parameters
     :param array: matrix - an array of the values in each chunk
     :param questionPoint: tuple - the coordinates of the chunk toward which the expansion is going
-    :param expansionPoint: tuple - the coordinates of the chunk from which the expansion is going
     :param clusterCenter1: tuple - the coordinates of the chunk of the first cluster center
     :param clusterCenter2: tuple - the coordinates of the chunk of the second cluster center
     :param version: integer - the version of SBM (0-original version, 1=license, 2=modified with less noise)
 
     :returns : integer - representing the approach to disambiguation
     """
-
     distanceToC1 = euclidean_point_distance(questionPoint, clusterCenter1)
     distanceToC2 = euclidean_point_distance(questionPoint, clusterCenter2)
 
