@@ -1,5 +1,26 @@
 import numpy as np
 
+neighbour_4offsets = np.array(
+    [
+        [-1, 0],
+        [0, -1],
+        [0, 1],
+        [1, 0],
+    ]
+)
+
+neighbour_8offsets = np.array(
+    [
+        [-1, -1],
+        [-1, 0],
+        [-1, 1],
+        [0, -1],
+        [0, 1],
+        [1, -1],
+        [1, 0],
+        [1, 1],
+    ]
+)
 
 def get_valid_neighbours(point, shape):
     neighbours = get_neighbours(point)
@@ -43,46 +64,15 @@ def validate_neighbours(neighbours, shape):
 
 
 def get_neighbours4(point):
-    neighbour_offsets = np.array(
-        [
-            [-1, 0],
-            [0, -1],
-            [0, 1],
-            [1, 0],
-        ]
-    )
-
-    return point+neighbour_offsets
+    return point+neighbour_4offsets
 
 
+def get_neighbours8(point):
+    return point+neighbour_8offsets
 
+def get_valid_neighbours8(point, shape):
+    return validate_neighbours(point+neighbour_8offsets, shape)
 
-def get_neighbours_star(point, shape):
-    offsets = np.array([
-        [-2, 0],
-
-        [-1, -1],
-        [-1, 0],
-        [-1, 1],
-
-        [0, -2],
-        [0, -1],
-        [0, 0],
-        [0, 1],
-        [0, 2],
-
-        [1, -1],
-        [1, 0],
-        [1, 1],
-
-        [2, 0]
-    ])
-
-    neighbours = point + offsets
-
-    neighbours = validate_neighbours(neighbours, shape)
-
-    return neighbours
 
 
 

@@ -1,10 +1,25 @@
 import numpy as np
 from matplotlib import pyplot as plt
 
-from utils import toy_data
 from common.array_processing import split_consecutive
-from TFBM import run_TFBM
+from algorithms.TFBM import run_TFBM
 
+
+def toy_data():
+    # ------------------A toy example------------------
+    xx = np.linspace(-10, 10, 100)
+    yy = np.linspace(-10, 10, 100)
+
+    XX, YY = np.meshgrid(xx, yy)
+
+    slab = np.zeros(XX.shape)
+
+    # add 3 peaks
+    slab += 5 * np.exp(-XX ** 2 / 1 ** 2 - YY ** 2 / 1 ** 2)
+    slab += 8 * np.exp(-(XX - 3) ** 2 / 2 ** 2 - YY ** 2 / 2 ** 2)
+    slab += 10 * np.exp(-(XX + 4) ** 2 / 2 ** 2 - YY ** 2 / 2 ** 2)
+
+    return xx, XX, yy, YY, slab
 
 
 def plot1D(xx, line, labelsLine):

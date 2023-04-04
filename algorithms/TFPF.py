@@ -3,11 +3,21 @@ import sys
 import numpy as np
 
 from common.extrema import find_extrema_2D
-from structs import BoundingBox
+from algorithms.structs import BoundingBox
 
 
 class Blob:
     def __init__(self, ID, rowBounds, colBounds, center, pixelCount, mask, contour):
+        """
+
+        :param ID:
+        :param rowBounds:
+        :param colBounds:
+        :param center:
+        :param pixelCount:
+        :param mask:
+        :param contour:
+        """
         self.ID = ID
         self.rowBounds = rowBounds
         self.colBounds = colBounds
@@ -20,6 +30,14 @@ class Blob:
 
 class BlobDetector:
     def __init__(self, image=None, valueThreshold=sys.float_info.min, pixelThreshold=20, style="None", computeContours=False):
+        """
+
+        :param image: matrix - the power values of the spectrogram
+        :param valueThreshold:
+        :param pixelThreshold:
+        :param style:
+        :param computeContours:
+        """
         self.NoBlobID = 0
         self.DetectedBlobs = []
         if image is not None:
@@ -52,6 +70,7 @@ class BlobDetector:
                     self.IDs_image[top[0], top[1]] = currentID
                     pixelCount += 1
 
+                    # To obtain the bounding box of the blob w.r.t the original image
                     minX = top[0] if top[0] < minX else minX
                     minY = top[1] if top[1] < minY else minY
                     maxX = top[0] if top[0] > maxX else maxX
@@ -64,6 +83,7 @@ class BlobDetector:
                     col_begin = max(top[1] - 1, 0)
                     col_end = min(top[1] + 1, image.shape[1] - 1)
 
+                    # 3x3 neighbors
                     contourPoint = False
                     for k in range(row_begin, row_end+1):
                         for l in range(col_begin, col_end+1):
@@ -74,8 +94,10 @@ class BlobDetector:
                                 contourPoint = True
                                 continue
 
+                            # assign to current blob
                             self.IDs_image[k, l] = currentID
 
+                            # enqueue the new point
                             queue.append((k, l))
 
                     if contourPoint and contour != []:
@@ -120,6 +142,14 @@ class BlobDetector:
 
 class Segment:
     def __init__(self, ID, level, blob, peakIDs, refPeakIDs):
+        """
+        A segment in the given image.
+        :param ID:          The indices of all the peaks.
+        :param level:       The level of the segment.
+        :param blob:        The blob, as extracted by the blob detector.
+        :param peakIDs:     The indices of the peaks in this segment at this level.
+        :param refPeakIDs:  The indices of all the peaks for which this segment is the reference.
+        """
         self.ID = ID
         self.level = level
         self.blob = blob
@@ -129,6 +159,20 @@ class Segment:
 
 class Peak:
     def __init__(self, ID=0, segmentID=0, level=0, value=0, row=0, col=0):
+        """
+        Encapsulates a peak in a given image.
+        :param ID:          The ID of the peak.
+        :param segmentID:   The unique index of the segment (blob).
+        :param level:       The level the peak is at.
+        :param value:       The value of the peak.
+        :param row:         The row the peak is at in the input image.
+        :param col:         The column the peak is at in the input image
+        :param prominence:  The prominence of the peak.
+        :param referenceLevel:  The level of the reference line.
+        :param referenceSegmentID:  The ID of the reference segment.
+        :param coordinates:
+
+        """
         self.ID = ID
         self.segmentID = segmentID
         self.level = level
@@ -148,6 +192,11 @@ class TFPF:
 
 
     def slice_n_dice(self, sliceLevel):
+        """
+
+        :param sliceLevel:
+        :return:
+        """
         self.labels = np.zeros_like(self.quantization)
         self.final_peaks = []
         self.final_rects = []
@@ -168,11 +217,13 @@ class TFPF:
             if segment.level != sliceLevel:
                 continue
 
+            # find highest peak in segment
             maxPeak = Peak(value=self.input_range[0])
             for peak in self.peaks:
                 if segmentation[peak.coordinates] == segment.ID and peak.value > maxPeak.value:
                     maxPeak = peak
 
+            # add the peak label to the segmentation map
             labelCount += 1
 
             mask = segment.blob.mask
@@ -184,6 +235,7 @@ class TFPF:
                     if mask[i, j] > 0:
                         self.labels[row_begin+i, col_begin+j] = labelCount
 
+            # add the peak and bounding box to the list
             self.final_peaks.append((maxPeak.row, maxPeak.col))
             self.final_rects.append(segment.blob.boundingBox)
             self.final_masks.append(segment.blob.mask)
@@ -193,12 +245,31 @@ class TFPF:
 
 
     def evaluate(self, input, quantizationMethod="linear", quantizationLevels=30, skipLevels=1):
+        """
+
+        :param input:
+        :param quantizationMethod:
+        :param quantizationLevels:
+        :param skipLevels:
+        :return:
+        """
+        # quantize the input image
         self.quantize(input, quantizationMethod, quantizationLevels)
+
+        # parse the input image
         self.parse_image(input, skipLevels)
+
+        # compute peak reference lines and prominences
         self.compute_peak_references(skipLevels)
 
 
     def compute_peak_references(self, skipLevels):
+        """
+
+        :param skipLevels:
+        :return:
+        """
+
         for peak in self.peaks:
             currentLevel = peak.level
             peak.prominence = self.get_prominence(peak.value, self.level_thresholds[currentLevel])
@@ -232,6 +303,12 @@ class TFPF:
 
 
     def parse_image(self, input, skipLevels):
+        """
+
+        :param input:
+        :param skipLevels:
+        :return:
+        """
 
         self.segmentations = []
         self.segments = []
@@ -292,6 +369,12 @@ class TFPF:
 
 
     def fill_mask(self, input, blobs):
+        """
+
+        :param input:
+        :param blobs:
+        :return:
+        """
         self.masked_image = np.full_like(input, self.input_range[0])
 
         for blob in blobs:
@@ -306,6 +389,13 @@ class TFPF:
 
 
     def quantize(self, input, quantizationMethod, quantizationLevels):
+        """
+
+        :param input:
+        :param quantizationMethod:
+        :param quantizationLevels:
+        :return:
+        """
         self.input_range = (np.amin(input), np.amax(input))
 
         #TODO distribution

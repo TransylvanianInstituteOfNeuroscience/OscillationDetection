@@ -1,19 +1,30 @@
-import math
 import random
+from collections import deque
 
 import numpy as np
 import warnings
 
+from scipy.ndimage import maximum_filter
 from sklearn.preprocessing import LabelEncoder
 
-from common.distance import euclidean_point_distance, euclidean_point_distance_scale
-from common.maxima import check_maxima_no_neighbour_maxim, check_maxima
-from common.neighbourhood import get_valid_neighbours
+from common.distance import euclidean_point_distance, euclidean_point_distance_scale, euclidean_points_distance
+from common.neighbourhood import get_valid_neighbours8
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
-def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disambig="no", merging="no"):
+def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disambig=False, merging=False):
+    """
+    Main function for running the algorithm
+    :param data: matrix - spectrogram of the power values
+    :param threshold: float - algorithm parameter
+    :param gravitational_pull: float - algorithm parameter
+    :param expansion_factor: float - algorithm parameter
+    :param scale: vector of 2 - algorithm parameter
+    :param disambig: boolean - algorithm parameter
+    :param merging: boolean - algorithm parameter
+    :return:
+    """
     clusterCenters = find_cluster_centers_no_neighbours(data, threshold=threshold)
 
     pairs = []
@@ -26,18 +37,17 @@ def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disam
     sorted_pairs = pairs[pairs[:, 1].argsort()][::-1]
     for pair in sorted_pairs:
         test = {}
-        test['coordinates'] = pair[0]
+        test['coordinates'] = tuple(pair[0])
         test['peak'] = pair[1]
         cc_info.append(test)
 
 
     labelsMatrix = np.zeros_like(data, dtype=int)
     for index in range(len(cc_info)):
-        point = cc_info[index]['coordinates']
+        point = tuple(cc_info[index]['coordinates'])
         if labelsMatrix[point] != 0:
             continue  # cluster was already discovered
-        labelsMatrix = expand_cluster_center(data, point, labelsMatrix, index+1, cc_info, expansion_factor,
-                                             scale=scale, disambig=disambig)
+        labelsMatrix = expand_cluster_center(data, point, labelsMatrix, index+1, cc_info, expansion_factor, scale=scale, disambig=disambig)
 
 
     for id, cc in enumerate(cc_info):
@@ -46,7 +56,7 @@ def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disam
         for point in cc['points']:
             testMatrix[point] = 1
         for point in cc['points']:
-            neighbours = get_valid_neighbours(point, np.shape(data))
+            neighbours = get_valid_neighbours8(point, np.shape(data))
             for neighbour in neighbours:
                 if testMatrix[tuple(neighbour)] == 0:
                     contour.append(point)
@@ -54,9 +64,6 @@ def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disam
         cc_info[id]['contour'] = contour
 
     for id, cc in enumerate(cc_info):
-        center = cc['coordinates']
-        center_point = [center[0], center[1], data[center]]
-
         points3D = []
         points2D = cc['contour']
         for point in points2D:
@@ -64,7 +71,7 @@ def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disam
 
         cc_info[id]['prominence'] = cc_info[id]['peak'] - np.amax(np.array(points3D)[:, 2])
 
-    if merging == 'yes':
+    if merging == True:
         cc_info, labelsMatrix = merge_labels(cc_info, data, labelsMatrix, scale, gravitational_pull)
 
 
@@ -98,12 +105,12 @@ def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disam
 
 def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
     """
-
-    :param cc_info:
-    :param array:
-    :param labels:
-    :param scale:
-    :param G_PULL:
+    Post-Process for the merging of  labels
+    :param cc_info: list of dicts - internal structure for holding data
+    :param array: matrix - an array of the power values, representing the spectrogram
+    :param labels: matrix - the label given by the algorithm for each power value
+    :param scale: vector of 2 - algorithm parameter
+    :param G_PULL: float - algorithm parameter
     :return:
     """
     for i in range(len(cc_info)):
@@ -149,74 +156,54 @@ def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
 
 
 
-def find_cluster_centers(array, threshold=5):
-    """
-    Search through the matrix of chunks to find the cluster centers
-    :param array: matrix - an array of the values in each chunk
-    :param threshold: integer - cluster center threshold, minimum amount needed for a chunk to be considered a possible cluster center
-
-    :returns clusterCenters: vector - a vector of the coordinates of the chunks that are cluster centers
-    """
-    clusterCenters = []
-
-    for index, value in np.ndenumerate(array):
-        if value >= threshold and check_maxima(array, index):  # TODO exclude neighbour centers
-            clusterCenters.append(index)
-
-    return clusterCenters
-
-
-
-
 def find_cluster_centers_no_neighbours(array, threshold=5):
     """
-    Search through the matrix of chunks to find the cluster centers
-    :param array: matrix - an array of the values in each chunk
-    :param threshold: integer - cluster center threshold, minimum amount needed for a chunk to be considered a possible cluster center
+    Search through the spectrogram matrix to find the cluster centers
+    :param array:       matrix - an array of the power values, representing the spectrogram
+    :param threshold:   integer - oscillation packet threshold, minimum value needed for a (x,y) point to be considered a possible oscillation packet center
 
     :returns clusterCenters: vector - a vector of the coordinates of the chunks that are cluster centers
     """
-    clusterCenters = []
 
-    for index, value in np.ndenumerate(array):
-        if value >= threshold and check_maxima_no_neighbour_maxim(array, index, clusterCenters):
-            clusterCenters.append(index)
+    clusterCenters = np.argwhere((maximum_filter(array, size=3) == array) & (array > threshold))
 
     return clusterCenters
 
 
-def get_dropoff(ndArray, location):
-    """
 
-    :param ndArray:
-    :param location:
-    :return:
+
+def get_dropoff(array, location):
     """
-    neighbours = get_valid_neighbours(location, np.shape(ndArray))
-    dropoff = 0
-    for neighbour in neighbours:
-        neighbourLocation = tuple(neighbour)
-        dropoff += ((ndArray[location] - ndArray[neighbourLocation]) ** 2)
+    Calculate the dropoff of a certain location
+    :param array:       matrix - an array of the power values, representing the spectrogram
+    :param location:    tuple - indicates the (x,y) of the current point for which the dropoff will be calculated
+
+    :return: dropoff:   float - a float value that represents the dropoff of a certain location
+    """
+    neighbours = get_valid_neighbours8(location, array.shape)
+    dropoff = np.sum((array[location] - array[neighbours[:, 0], neighbours[:, 1]]) ** 2) / len(neighbours)
     if dropoff > 0:
-        return math.sqrt(dropoff / len(neighbours)) / ndArray[location]
+        return np.sqrt(dropoff / len(neighbours)) / array[location]
     return 0
 
 
 
-def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion_factor, scale, disambig="no"):  # TODO
+def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion_factor, scale, disambig=False):  # TODO
     """
     Expansion
-    :param array: matrix - an array of the values in each chunk
-    :param start: tuple - the coordinates of the chunk where the expansion starts (current cluster center)
+    :param array: matrix - an array of the power values, representing the spectrogram
+    :param start: tuple - the coordinates of the (x,y) power value where the expansion starts (current cluster center)
     :param labels: matrix - the labels array
-    :param currentLabel: integer - the label of the current cluster center
-    :param clusterCenters: vector - vector of all the cluster centers, each containing n-dimensions
-    :param version: integer - the version of SBM (0-original version, 1=license, 2=modified with less noise)
+    :param currentLabel: integer - the label of the current oscillation packet
+    :param cc_info: vector - vector of dictionary that represents the structure that holds information of each detected oscillation packet
+    :param expansion_factor: float - algorithm parameter
+    :param scale: vector of 2 - algorithm parameter
+    :param disambig: boolean - whether the algorithm will disambiguate certain points that had conflicts
 
     :returns labels: matrix - updated matrix of labels after expansion and conflict solve
     """
     visited = np.zeros_like(array, dtype=bool)
-    expansionQueue = []
+    expansionQueue = deque()
     if labels[start] == 0:
         expansionQueue.append(start)
         labels[start] = currentLabel
@@ -225,7 +212,7 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion
 
     cc_index = 0
     for id, cc in enumerate(cc_info):
-        if cc['coordinates'] == start:
+        if tuple(cc['coordinates']) == start:
             cc_index = id
             break
 
@@ -238,21 +225,21 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion
     cc_info[cc_index]['finish_label'] = currentLabel
 
     while expansionQueue:
-        point = expansionQueue.pop(0)
+        point = expansionQueue.popleft()
         points.append(tuple(point))
-        neighbours = get_valid_neighbours(point, np.shape(array))
+        neighbours = get_valid_neighbours8(point, array.shape)
 
-        for neighbour in neighbours:
+        distances = euclidean_points_distance(start, neighbours, scale)
+
+        for neigh_id, neighbour in enumerate(neighbours):
             location = tuple(neighbour)
+            number = dropoff * distances[neigh_id]
 
-            number = dropoff * euclidean_point_distance_scale(start, location, scale)
-
-            if (not visited[location]) and (number * expansion_factor  < array[location] <= array[point]):
+            if (not visited[location]) and (number * expansion_factor < array[location] <= array[point]):
                 visited[location] = True
-                if labels[location] == currentLabel:
-                    expansionQueue.append(location)
-                elif labels[location] == 0:
-                    expansionQueue.append(location)
+                expansionQueue.append(location)
+
+                if labels[location] == 0:
                     labels[location] = currentLabel
                 else:
                     oldLabel = labels[location]
@@ -264,18 +251,15 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion
                         conflicts[key] = []
                         conflicts[key].append(location)
 
-                    if disambig=="yes":
+                    if disambig==True:
                         disRez = disambiguate(array,
                                               location,
                                               cc_info[currentLabel - 1]['coordinates'],
-                                              cc_info[oldLabel - 1]['coordinates'],
-                                              scale)
+                                              cc_info[oldLabel - 1]['coordinates'])
                         if disRez == 1:
                             labels[location] = currentLabel
-                            expansionQueue.append(location)
                         elif disRez == 2:
                             labels[location] = oldLabel
-                            expansionQueue.append(location)
 
     cc_info[cc_index]['zconflicts'] = conflicts
     cc_info[cc_index]['points'] = points
@@ -283,14 +267,13 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion
     return labels
 
 
-def disambiguate(array, questionPoint, clusterCenter1, clusterCenter2, scale):
+def disambiguate(array, questionPoint, clusterCenter1, clusterCenter2):
     """
-    Disambiguation of the cluster of a chunk based on the parameters
-    :param array: matrix - an array of the values in each chunk
-    :param questionPoint: tuple - the coordinates of the chunk toward which the expansion is going
-    :param clusterCenter1: tuple - the coordinates of the chunk of the first cluster center
-    :param clusterCenter2: tuple - the coordinates of the chunk of the second cluster center
-    :param version: integer - the version of SBM (0-original version, 1=license, 2=modified with less noise)
+    Disambiguation of a point from the spectrogram based on the parameters
+    :param array: matrix - an array of the power values, representing the spectrogram
+    :param questionPoint: tuple - the coordinates (x, y) in the spectrogram toward which the expansion is going
+    :param clusterCenter1: tuple - the coordinates (x, y) of the power value of the first oscillation packet
+    :param clusterCenter2: tuple - the coordinates (x, y) of the power value of the second oscillation packet
 
     :returns : integer - representing the approach to disambiguation
     """

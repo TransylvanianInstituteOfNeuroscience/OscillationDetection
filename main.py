@@ -1,28 +1,18 @@
-import os
-
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
-from OEvents import OEvents
-from TFBM import run_TFBM
-from TFPF import TFPF
-from structs import Spectrum2D
+from algorithms.OEvents import OEvents
+from algorithms.TFBM import run_TFBM
+from algorithms.TFPF import TFPF
+from algorithms.structs import Spectrum2D
 from common.image_proc import apply_mask
 from preprocess.data_scaling import normalize_data_min_max
 
 
-def TFBM_and_plot(data):
-
-    data = normalize_data_min_max(data) * 100
-    scale = 100 / np.array(data.shape)
-    threshold = 10
-    gravitational_pull = 1
-    expansion_factor = 30
-
-
+def plot_data_result_mask(method_name, data, labelsMatrix, center_coords):
     fig= plt.figure(figsize=(24, 6))
-    fig.suptitle("TFBM", fontsize=16)
+    fig.suptitle(method_name, fontsize=16)
     ax = fig.add_subplot(1, 3, 1)
 
     ax.set_title("Initial Data")
@@ -30,67 +20,16 @@ def TFBM_and_plot(data):
     ax.invert_yaxis()
     plt.colorbar(im)
 
-    labelsMatrix, cc_info = run_TFBM(data, threshold=threshold, gravitational_pull=gravitational_pull, scale=scale,
-                                               expansion_factor=expansion_factor, disambig=True, merging=True)
-    print(f"{len(np.unique(labelsMatrix))} blobs found, containing {len(cc_info)} local maxima")
-
-
     ax = fig.add_subplot(1, 3, 2)
     ax.set_title("Mask")
     im = ax.imshow(labelsMatrix, aspect='auto', cmap='jet', interpolation='none')
     ax.invert_yaxis()
     plt.colorbar(im)
-    for cc in cc_info:
-        coords = cc['coordinates']
-        plt.scatter(coords[1], coords[0], s=1, c='black', marker='o')
-        if cc['parent'] == -1:
-            plt.scatter(coords[1], coords[0], s=1, c='white', marker='o')
 
-    masked = apply_mask(data, labelsMatrix)
-
-    test = np.zeros_like(data)
-    for cc in cc_info:
-        contour_points = cc['contour']
-        for contour_point in contour_points:
-                test[contour_point[0], contour_point[1]] = 1
-
-    ax = fig.add_subplot(1, 3, 3)
-    ax.set_title("Segmentation")
-    im = ax.imshow(masked, aspect='auto', cmap='jet', interpolation='none')
-    plt.colorbar(im)
-    im = ax.imshow(test, aspect='auto', cmap='bone_r', interpolation='none', alpha=test)
-    ax.invert_yaxis()
-
-
-    plt.show()
-
-
-def TFPF_and_plot(data):
-    sliceLevel=10
-
-    fig= plt.figure(figsize=(24, 6))
-    fig.suptitle("TFPF", fontsize=16)
-    ax = fig.add_subplot(1, 3, 1)
-
-    ax.set_title("Initial Data")
-    im = ax.imshow(data, aspect='auto', cmap='jet', interpolation='none')
-    ax.invert_yaxis()
-    plt.colorbar(im)
-
-    peakfinder = TFPF()
-    peakfinder.evaluate(data)
-    peakfinder.slice_n_dice(sliceLevel=sliceLevel)
-    labelsMatrix = peakfinder.labels
-
-    ax = fig.add_subplot(1, 3, 2)
-    ax.set_title("Mask")
-    im = ax.imshow(labelsMatrix, aspect='auto', cmap='jet', interpolation='none')
-    ax.invert_yaxis()
-    plt.colorbar(im)
-    for peak in peakfinder.peaks:
-        coords = peak.coordinates
-        plt.scatter(coords[1], coords[0], s=1, c='black', marker='o')
-
+    for center_coord in center_coords:
+        plt.scatter(center_coord[1], center_coord[0], s=1, c='black', marker='o')
+        # if cc['parent'] == -1:
+        #     plt.scatter(coords[1], coords[0], s=1, c='white', marker='o')
 
     masked = apply_mask(data, labelsMatrix)
 
@@ -110,6 +49,36 @@ def TFPF_and_plot(data):
 
     plt.show()
 
+def TFBM_and_plot(data):
+    data = normalize_data_min_max(data) * 100
+    scale = 100 / np.array(data.shape)
+    threshold = 10
+    gravitational_pull = 4
+    expansion_factor = 30
+
+
+    labelsMatrix, cc_info = run_TFBM(data, threshold=threshold, gravitational_pull=gravitational_pull, scale=scale,
+                                               expansion_factor=expansion_factor, disambig=True, merging=True)
+
+    center_coords = [cc['coordinates'] for cc in cc_info]
+
+    plot_data_result_mask("TFBM", data, labelsMatrix, center_coords)
+
+
+
+def TFPF_and_plot(data):
+    sliceLevel=10
+
+    peakfinder = TFPF()
+    peakfinder.evaluate(data)
+    peakfinder.slice_n_dice(sliceLevel=sliceLevel)
+
+    labelsMatrix = peakfinder.labels
+
+    center_coords = [peak.coordinates for peak in peakfinder.peaks]
+
+    plot_data_result_mask("TFPF", data, labelsMatrix, center_coords)
+
 
 def OEvents_and_plot(spectrumData):
     oe = OEvents()
@@ -128,19 +97,15 @@ def OEvents_and_plot(spectrumData):
     ax.invert_yaxis()
     plt.colorbar(im)
 
-
     ax = fig.add_subplot(1, 2, 2)
     ax.set_title("Events Found")
     im = ax.imshow(data, aspect='auto', cmap='jet', interpolation='none')
     ax.invert_yaxis()
     plt.colorbar(im)
 
-
     for event in events:
         box = event.boundingBox
         ax.add_patch(Rectangle((box.R, box.B), box.L-box.R, box.T-box.B, linewidth=1, edgecolor='red', facecolor='none'))
-
-
 
     plt.show()
 
