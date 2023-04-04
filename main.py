@@ -146,7 +146,7 @@ def OEvents_and_plot(spectrumData):
 
 
 
-def load_toy_data():
+def load_atoms_synthetic_data():
     data_folder = "./DATA/toy/"
     file = "atoms-2.csv"
 
@@ -169,7 +169,7 @@ def load_toy_data():
     return data, spectrumData
 
 
-def load_downsampled_toy_data():
+def load_downsampled_atoms_synthetic_data():
     data_folder = "./DATA/toy/"
     file = "atoms-2.csv"
 
@@ -195,10 +195,10 @@ def load_downsampled_toy_data():
 
 
 if __name__ == "__main__":
-    data, spectrumData = load_toy_data()
+    data, spectrumData = load_atoms_synthetic_data()
     OEvents_and_plot(spectrumData)
 
-    downsampled_data = load_downsampled_toy_data()
+    downsampled_data = load_downsampled_atoms_synthetic_data()
 
     TFBM_and_plot(downsampled_data)
     TFPF_and_plot(downsampled_data)

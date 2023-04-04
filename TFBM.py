@@ -97,17 +97,23 @@ def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disam
 
 
 def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
+    """
+
+    :param cc_info:
+    :param array:
+    :param labels:
+    :param scale:
+    :param G_PULL:
+    :return:
+    """
     for i in range(len(cc_info)):
         current_center = cc_info[i]['coordinates']
         current_label = cc_info[i]['finish_label']
-        current_prom = cc_info[i]['prominence']
 
-        conflicting_centers = []
         for conflict_center_str in list(cc_info[i]['zconflicts'].keys()):
             conflict_center = eval(conflict_center_str)
             conflict_label = labels[conflict_center]
 
-            conflict_prominence = cc_info[conflict_label-1]['prominence']
 
             c1_pull_sum = 0
             c2_pull_sum = 0
@@ -140,16 +146,6 @@ def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
     return cc_info, labels
 
 
-
-def find_supreme_parent(cc_info, i):
-
-    while cc_info[i]['parent'] != -1:
-        for id, cc in enumerate(cc_info):
-            if cc_info[i]['parent'] == cc['coordinates']:
-                i = id
-                break
-
-    return i
 
 
 
@@ -190,6 +186,12 @@ def find_cluster_centers_no_neighbours(array, threshold=5):
 
 
 def get_dropoff(ndArray, location):
+    """
+
+    :param ndArray:
+    :param location:
+    :return:
+    """
     neighbours = get_valid_neighbours(location, np.shape(ndArray))
     dropoff = 0
     for neighbour in neighbours:
@@ -199,24 +201,6 @@ def get_dropoff(ndArray, location):
         return math.sqrt(dropoff / len(neighbours)) / ndArray[location]
     return 0
 
-
-def get_falloff(ndArray, location):
-    neighbours = get_valid_neighbours(location, np.shape(ndArray))
-    dropoff = 0
-    for neighbour in neighbours:
-        neighbourLocation = tuple(neighbour)
-        dropoff += ((ndArray[location] - ndArray[neighbourLocation]) ** 2)
-    if dropoff > 0:
-        return dropoff / len(neighbours)
-    return 0
-
-
-def get_strength(ndArray, clusterCenter, questionPoint):
-    dist = euclidean_point_distance(clusterCenter, questionPoint)
-
-    strength = ndArray[questionPoint] / dist / ndArray[clusterCenter]
-
-    return strength
 
 
 def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion_factor, scale, disambig="no"):  # TODO
@@ -286,7 +270,6 @@ def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion
                                               cc_info[currentLabel - 1]['coordinates'],
                                               cc_info[oldLabel - 1]['coordinates'],
                                               scale)
-                        # # print(currentLabel, oldLabel, disRez)
                         if disRez == 1:
                             labels[location] = currentLabel
                             expansionQueue.append(location)

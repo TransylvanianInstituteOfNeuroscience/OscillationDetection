@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 
 from utils import toy_data
 from common.array_processing import split_consecutive
-from TFBM import cluster_center_bfs
+from TFBM import run_TFBM
 
 
 
@@ -48,12 +48,16 @@ plt.show()
 
 THR = 5
 G_PULL = 1
+EXP_FACTOR = 3
 
 data = line[:, None]
 
-labelsMatrix, cc_info = cluster_center_bfs(data, threshold=THR / 100 * np.amax(data), gravitational_pull=G_PULL,
-                                           scale=np.array([1 ,1]),
-                                           disambig="yes", merging="yes")
+labelsMatrix, cc_info = run_TFBM(data,
+                                 threshold=THR / 100 * np.amax(data),
+                                 gravitational_pull=G_PULL,
+                                 expansion_factor=EXP_FACTOR,
+                                 scale=np.array([1 ,1]),
+                                 disambig="yes", merging="yes")
 print(np.unique(labelsMatrix))
 
 labelsLine = np.squeeze(labelsMatrix)

@@ -1,8 +1,3 @@
-
-
-
-
-
 class Spectrum2D:
     def __init__(self, timeValues, frequencyValues, powerValues):
         self.timeValues = timeValues

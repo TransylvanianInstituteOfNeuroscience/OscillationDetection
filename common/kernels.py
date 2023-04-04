@@ -1,21 +1,6 @@
 import numpy as np
-from astropy.convolution import RickerWavelet2DKernel
 from scipy.ndimage.filters import gaussian_filter
 
-
-def choose_kernel(kernel_type, size=3):
-    # print(size)
-    if kernel_type == 'gaussian':
-        kernel = gaussian_kernel2(size=size, sigma=size / 3)
-        # kernel = np.array(matlab_style_gauss2D((110, 11), 3))
-        # plt.imshow(kernel)
-        # plt.show()
-        return kernel
-    if kernel_type == 'mexican_hat':
-        kernel = ricker_kernel(size=size)
-        # plt.imshow(kernel)
-        # plt.show()
-        return kernel
 
 def gaussian_kernel(size, sigma=1):
     if size % 2 == 0:
@@ -48,8 +33,3 @@ def __matlab_style_gauss2D(shape=(3, 3), sigma=0.5):
     if sumh != 0:
         h /= sumh
     return h
-
-
-def ricker_kernel(size=3, sigma=1.):
-    return RickerWavelet2DKernel(width=sigma, x_size=size, y_size=size)
-    # return RickerWavelet2DKernel(width=sigma, x_size=51, y_size=11)

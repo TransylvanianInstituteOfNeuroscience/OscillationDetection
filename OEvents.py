@@ -6,6 +6,16 @@ from structs import BoundingBox
 
 class Event:
     def __init__(self, peakValue, coordinates, spectrumCoordinates, boundingBox, timeRange, frequencyRange, data=None):
+        """
+
+        :param peakValue:
+        :param coordinates:
+        :param spectrumCoordinates:
+        :param boundingBox:
+        :param timeRange:
+        :param frequencyRange:
+        :param data:
+        """
         self.peakValue = peakValue
         self.coordinates = coordinates
         self.spectrumCoordinates = spectrumCoordinates
