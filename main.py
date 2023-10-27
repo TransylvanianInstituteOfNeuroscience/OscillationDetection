@@ -3,11 +3,10 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
 from algorithms.OEvents import OEvents
-from algorithms.TFBM import run_TFBM
+from algorithms.TFBM import TFBM
 from algorithms.TFPF import TFPF
 from algorithms.structs import Spectrum2D
 from common.image_proc import apply_mask
-from preprocess.data_scaling import normalize_data_min_max
 
 
 def plot_data_result_mask(method_name, data, labelsMatrix, center_coords):
@@ -50,19 +49,12 @@ def plot_data_result_mask(method_name, data, labelsMatrix, center_coords):
     plt.show()
 
 def TFBM_and_plot(data):
-    data = normalize_data_min_max(data) * 100
-    scale = 100 / np.array(data.shape)
-    threshold = 10
-    gravitational_pull = 4
-    expansion_factor = 30
+    tfbm = TFBM(data.T, threshold="auto", merge=True, merge_factor=15)
+    tfbm.fit(verbose=True, timer=True)
 
+    center_coords = [(pi.center_coords[1], pi.center_coords[0]) for pi in tfbm.packet_infos]
 
-    labelsMatrix, cc_info = run_TFBM(data, threshold=threshold, gravitational_pull=gravitational_pull, scale=scale,
-                                               expansion_factor=expansion_factor, disambig=True, merging=True)
-
-    center_coords = [cc['coordinates'] for cc in cc_info]
-
-    plot_data_result_mask("TFBM", data, labelsMatrix, center_coords)
+    plot_data_result_mask("TFBM", data, tfbm.merged_labels_data.T, center_coords)
 
 
 
@@ -162,9 +154,6 @@ def load_downsampled_atoms_synthetic_data():
 if __name__ == "__main__":
     data, spectrumData = load_atoms_synthetic_data()
     OEvents_and_plot(spectrumData)
-
-    downsampled_data = load_downsampled_atoms_synthetic_data()
-
-    TFBM_and_plot(downsampled_data)
-    TFPF_and_plot(downsampled_data)
+    TFBM_and_plot(data)
+    TFPF_and_plot(data)
 

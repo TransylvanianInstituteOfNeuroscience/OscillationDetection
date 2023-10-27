@@ -1,291 +1,421 @@
+import copy
+import time
 import random
-from collections import deque
 
 import numpy as np
-import warnings
 
 from scipy.ndimage import maximum_filter
 from sklearn.preprocessing import LabelEncoder
 
-from common.distance import euclidean_point_distance, euclidean_point_distance_scale, euclidean_points_distance
+from collections import deque
+
+from common.distance import euclidean_point_distance_scale_fast
 from common.neighbourhood import get_valid_neighbours8
-
-warnings.simplefilter(action='ignore', category=FutureWarning)
-
-
-def run_TFBM(data, threshold, gravitational_pull, expansion_factor, scale, disambig=False, merging=False):
-    """
-    Main function for running the algorithm
-    :param data: matrix - spectrogram of the power values
-    :param threshold: float - algorithm parameter
-    :param gravitational_pull: float - algorithm parameter
-    :param expansion_factor: float - algorithm parameter
-    :param scale: vector of 2 - algorithm parameter
-    :param disambig: boolean - algorithm parameter
-    :param merging: boolean - algorithm parameter
-    :return:
-    """
-    clusterCenters = find_cluster_centers_no_neighbours(data, threshold=threshold)
-
-    pairs = []
-    for cc in clusterCenters:
-        pairs.append([cc, data[tuple(cc)]])
-
-    pairs = np.array(pairs)
-
-    cc_info = []
-    sorted_pairs = pairs[pairs[:, 1].argsort()][::-1]
-    for pair in sorted_pairs:
-        test = {}
-        test['coordinates'] = tuple(pair[0])
-        test['peak'] = pair[1]
-        cc_info.append(test)
+from preprocess.data_scaling import normalize_data_min_max
 
 
-    labelsMatrix = np.zeros_like(data, dtype=int)
-    for index in range(len(cc_info)):
-        point = tuple(cc_info[index]['coordinates'])
-        if labelsMatrix[point] != 0:
-            continue  # cluster was already discovered
-        labelsMatrix = expand_cluster_center(data, point, labelsMatrix, index+1, cc_info, expansion_factor, scale=scale, disambig=disambig)
+class PacketInfo:
+    def __init__(self):
+        """
+        center_coords: 2D point indicating the XY coordinates of the current center
+        parent_coords: 2D point indicating the XY coordinates of the parent cluster
+        cluster_points: list of 2D points that determine the oscillation packet
+        contour_points: list of 2D points that determine only the contour of the oscillation packet
+        conflict_dict: dictionary that represents all the conflicts of the current cluster - with keys (coordinates of centres), values all the points of conflict
+        peak: value of the centre in the image
+        prominence: calculate as the difference between the peak and the maximum value of the contour
+        start_label: label assigned at the expansion of the oscillation packets
+        finish_label: label assigned after the merging process
+        """
+        self.center_coords = None
+        self.parent_center_coords = None
+        self.packet_points = []
+        self.contour_points = []
+        self.conflict_dict = None
+        self.peak = None
+        self.actual_peak = None
+        self.start_label = None
+
+        self.prominence = None
+        self.actual_prominence = None
+
+        self.finish_label = None
+        self.updated_packet_points = None
+        self.updated_contour_points = None
+        self.updated_conflict_dict = None
+
+        self.packet_mat = None
 
 
-    for id, cc in enumerate(cc_info):
-        contour = []
-        testMatrix = np.zeros_like(labelsMatrix)
-        for point in cc['points']:
-            testMatrix[point] = 1
-        for point in cc['points']:
-            neighbours = get_valid_neighbours8(point, np.shape(data))
-            for neighbour in neighbours:
-                if testMatrix[tuple(neighbour)] == 0:
-                    contour.append(point)
-                    break
-        cc_info[id]['contour'] = contour
+class TFBM:
+    def __init__(self, data, threshold="auto", merge=True, merge_factor=15):
+        self.actual_data = np.copy(data)
+        self.data = np.copy(data)
+        self.conflict_mat = np.zeros_like(self.data, dtype=int)
 
-    for id, cc in enumerate(cc_info):
-        points3D = []
-        points2D = cc['contour']
-        for point in points2D:
-            points3D.append([point[0], point[1], data[point]])
+        min_dim = min(self.data.shape[1], self.data.shape[0])
+        self.scale = np.array([min_dim / self.data.shape[0], min_dim / self.data.shape[1]])
 
-        cc_info[id]['prominence'] = cc_info[id]['peak'] - np.amax(np.array(points3D)[:, 2])
+        self.data = normalize_data_min_max(self.data) * 100
 
-    if merging == True:
-        cc_info, labelsMatrix = merge_labels(cc_info, data, labelsMatrix, scale, gravitational_pull)
+        hist, bin_edges = np.histogram(data, bins=100)
+        cumsum = np.cumsum(hist)
+        self.exp_thr = np.argwhere(cumsum > 90 / 100 * cumsum[-1])[0][0]
+
+        if threshold is "auto":
+            # The cumulative distribution (bottom panel) is used to set the threshold
+            # to cover 90% of all power values,
+            # which translate into less than 10% of the maximum power.
+            hist, bin_edges = np.histogram(data, bins=100)
+            cumsum = np.cumsum(hist)
+            self.threshold = np.argwhere(cumsum > 90 / 100 * cumsum[-1])[0][0]
+            self.exp_thr = self.threshold
+            self.threshold_type = "auto"
+        else:
+            self.threshold = threshold / 100 * np.amax(self.data)
+            self.threshold_type = "manual"
+
+        self.merge = merge
+        self.merge_factor = merge_factor
+
+        self.packet_infos = []
+
+        self.labels_data = np.zeros_like(self.data, dtype=int)
+        self.merged_labels_data = np.zeros_like(self.data, dtype=int)
 
 
-    le = LabelEncoder()
-    labelsMatrix = le.fit_transform(labelsMatrix.reshape(-1, 1))
-    labelsMatrix = labelsMatrix.reshape(data.shape)
-
-
-    for i in range(len(cc_info)):
-        if cc_info[i]['parent'] == -1:
-            print("Center Coords:", cc_info[i]['coordinates'])
-            print("Peak Value:", cc_info[i]['peak'])
-            print(f"Prominence : {cc_info[i]['prominence'] :.2f}")
-            print("Parent Cluster:", cc_info[i]['parent'])
-            print("Start Label:", cc_info[i]['start_label'])
-            print("Finish Label:", cc_info[i]['finish_label'])
+    def fit(self, verbose=False, timer=False):
+        if verbose == True:
             print()
+            print("------- TFBM starts --------")
+            print(f"Threshold set at {self.threshold}")
+
+        start = time.time()
+        self.find_packet_centers_no_neighbours()
+        if verbose == True:
+            print(f"Found {len(self.packet_infos)} packet centers with "
+                  f"{'automatically' if self.threshold_type is 'auto' else 'manually'} "
+                  f"set threshold at {self.threshold}")
+        if timer == True:
+            print(f"PCS timer: {time.time() - start:.5f}s")
+
+        start = time.time()
+        self.expand_all_packets()
+        if timer == True:
+            print(f"EXP timer: {time.time() - start:.5f}s")
+        if verbose == True:
+            print(f"{len(np.unique(self.labels_data))} packets expanded, containing {len(self.packet_infos)} local maxima")
+
+        if self.merge == True:
+            start = time.time()
+            self.merge_labels()
+            if timer == True:
+                print(f"MERGE timer: {time.time() - start:.5f}s")
+            if verbose == True:
+                print(f"Merged into {len(np.unique(self.merged_labels_data))} packets found, containing {len(self.packet_infos)} local maxima")
+
+        self.reencode_labels()
+
+        if verbose == True:
+            print("------- TFBM stops --------")
             print()
 
+    def find_packet_centers_no_neighbours(self):
+        """
+        Search through the matrix of chunks to find the cluster centers
+        """
 
-    label_list = list(range(1, len(np.unique(labelsMatrix))))
-    random.shuffle(label_list)
+        packet_centers = np.argwhere((maximum_filter(self.data, size=3) == self.data) & (self.data > self.threshold))
 
-    newLabelsMatrix = np.zeros_like(labelsMatrix)
-    for id, label in enumerate(np.unique(labelsMatrix)[1:]):
-        newLabelsMatrix[labelsMatrix == label] = label_list[id]
+        # create packet_infos
+        self.create_packet_infos(packet_centers)
 
-    return newLabelsMatrix, cc_info
+    def expand_all_packets(self):
+        for current_id, packet_info in enumerate(self.packet_infos):
+            self.expand_packet_center(current_id)
 
+        self.og_labels = np.copy(self.labels_data)
+        self.packet_conflict_solver()
 
+        self.merged_labels_data = np.copy(self.labels_data)
+        self.calculate_contours_and_conflicts()
+        self.calculate_prominences()
 
-def merge_labels(cc_info, array, labels, scale, G_PULL = 1.5):
-    """
-    Post-Process for the merging of  labels
-    :param cc_info: list of dicts - internal structure for holding data
-    :param array: matrix - an array of the power values, representing the spectrogram
-    :param labels: matrix - the label given by the algorithm for each power value
-    :param scale: vector of 2 - algorithm parameter
-    :param G_PULL: float - algorithm parameter
-    :return:
-    """
-    for i in range(len(cc_info)):
-        current_center = cc_info[i]['coordinates']
-        current_label = cc_info[i]['finish_label']
+    def expand_packet_center(self, current_id):  # TODO
+        """
+        Expansion
+        :param current_id: integer - the id of the current cluster center
 
-        for conflict_center_str in list(cc_info[i]['zconflicts'].keys()):
-            conflict_center = eval(conflict_center_str)
-            conflict_label = labels[conflict_center]
+        """
+        start = tuple(self.packet_infos[current_id].center_coords)
 
+        current_label = current_id + 1
 
-            c1_pull_sum = 0
-            c2_pull_sum = 0
-            conflicts_coords = cc_info[i]['zconflicts'][conflict_center_str]
-            for conflict_coord in conflicts_coords:
-                distanceC1 = euclidean_point_distance_scale(current_center, conflict_coord, scale)
-                distanceC2 = euclidean_point_distance_scale(conflict_center, conflict_coord, scale)
-                c1_pull = array[current_center] * get_dropoff(array, current_center) * distanceC1
-                c2_pull = array[conflict_center] * get_dropoff(array, conflict_center) * distanceC2
+        self.packet_infos[current_id].parent_center_coords = None
+        self.packet_infos[current_id].start_label = current_label
+        self.packet_infos[current_id].finish_label = current_label
+        self.packet_infos[current_id].packet_mat = np.zeros_like(self.data, dtype=bool)
 
-                c1_pull_sum+=c1_pull
-                c2_pull_sum+=c2_pull
-
-            if conflict_label == current_label:
-                continue
-
-
-            if c1_pull_sum > c2_pull_sum*G_PULL:
-                labels[labels == conflict_label] = current_label
-
-                cc_info[conflict_label - 1]['parent'] = cc_info[i]['coordinates']
-                cc_info[conflict_label - 1]['finish_label'] = current_label
-
-            elif c1_pull_sum*G_PULL < c2_pull_sum:
-                labels[labels == current_label] = conflict_label
-
-                cc_info[i]['parent'] = cc_info[conflict_label - 1]['coordinates']
-                cc_info[i]['finish_label'] = conflict_label
-
-    return cc_info, labels
-
-
-
-
-
-def find_cluster_centers_no_neighbours(array, threshold=5):
-    """
-    Search through the spectrogram matrix to find the cluster centers
-    :param array:       matrix - an array of the power values, representing the spectrogram
-    :param threshold:   integer - oscillation packet threshold, minimum value needed for a (x,y) point to be considered a possible oscillation packet center
-
-    :returns clusterCenters: vector - a vector of the coordinates of the chunks that are cluster centers
-    """
-
-    clusterCenters = np.argwhere((maximum_filter(array, size=3) == array) & (array > threshold))
-
-    return clusterCenters
-
-
-
-
-def get_dropoff(array, location):
-    """
-    Calculate the dropoff of a certain location
-    :param array:       matrix - an array of the power values, representing the spectrogram
-    :param location:    tuple - indicates the (x,y) of the current point for which the dropoff will be calculated
-
-    :return: dropoff:   float - a float value that represents the dropoff of a certain location
-    """
-    neighbours = get_valid_neighbours8(location, array.shape)
-    dropoff = np.sum((array[location] - array[neighbours[:, 0], neighbours[:, 1]]) ** 2) / len(neighbours)
-    if dropoff > 0:
-        return np.sqrt(dropoff / len(neighbours)) / array[location]
-    return 0
-
-
-
-def expand_cluster_center(array, start, labels, currentLabel, cc_info, expansion_factor, scale, disambig=False):  # TODO
-    """
-    Expansion
-    :param array: matrix - an array of the power values, representing the spectrogram
-    :param start: tuple - the coordinates of the (x,y) power value where the expansion starts (current cluster center)
-    :param labels: matrix - the labels array
-    :param currentLabel: integer - the label of the current oscillation packet
-    :param cc_info: vector - vector of dictionary that represents the structure that holds information of each detected oscillation packet
-    :param expansion_factor: float - algorithm parameter
-    :param scale: vector of 2 - algorithm parameter
-    :param disambig: boolean - whether the algorithm will disambiguate certain points that had conflicts
-
-    :returns labels: matrix - updated matrix of labels after expansion and conflict solve
-    """
-    visited = np.zeros_like(array, dtype=bool)
-    expansionQueue = deque()
-    if labels[start] == 0:
+        # init class and queue
+        expansionQueue = deque()
         expansionQueue.append(start)
-        labels[start] = currentLabel
+        self.packet_infos[current_id].packet_mat[start] = current_label
+        self.labels_data[start] = current_label
 
-    visited[start] = True
+        while expansionQueue:
+            point = expansionQueue.popleft()
 
-    cc_index = 0
-    for id, cc in enumerate(cc_info):
-        if tuple(cc['coordinates']) == start:
-            cc_index = id
-            break
+            neighbours = get_valid_neighbours8(point, self.data.shape)
+            dropoff = np.sqrt(np.sum((self.data[point] - np.amax(self.data[neighbours[:, 0], neighbours[:, 1]])) ** 2))
+            dist = euclidean_point_distance_scale_fast(np.array(start), np.array(point), scale=self.scale)
+            number = dropoff * dist
 
-    dropoff = get_dropoff(array, start)
+            for neigh_id, neighbour_coord in enumerate(neighbours):
+                neighbour = tuple(neighbour_coord)
 
-    conflicts = {}
-    points = []
-    cc_info[cc_index]['parent'] = -1
-    cc_info[cc_index]['start_label'] = currentLabel
-    cc_info[cc_index]['finish_label'] = currentLabel
-
-    while expansionQueue:
-        point = expansionQueue.popleft()
-        points.append(tuple(point))
-        neighbours = get_valid_neighbours8(point, array.shape)
-
-        distances = euclidean_points_distance(start, neighbours, scale)
-
-        for neigh_id, neighbour in enumerate(neighbours):
-            location = tuple(neighbour)
-            number = dropoff * distances[neigh_id]
-
-            if (not visited[location]) and (number * expansion_factor < array[location] <= array[point]):
-                visited[location] = True
-                expansionQueue.append(location)
-
-                if labels[location] == 0:
-                    labels[location] = currentLabel
-                else:
-                    oldLabel = labels[location]
-
-                    key = f"{cc_info[oldLabel-1]['coordinates']}"
-                    if key in conflicts.keys():
-                        conflicts[key].append(location)
+                if self.packet_infos[current_id].packet_mat[neighbour] == 0 and number <= self.data[neighbour] <= self.data[point]:
+                    expansionQueue.append(neighbour)
+                    if self.labels_data[neighbour] == 0:
+                        self.labels_data[neighbour] = current_label
                     else:
-                        conflicts[key] = []
-                        conflicts[key].append(location)
+                        self.labels_data[neighbour] = -1 # indicate conflict point
+                    self.packet_infos[current_id].packet_mat[neighbour] = 1
 
-                    if disambig==True:
-                        disRez = disambiguate(array,
-                                              location,
-                                              cc_info[currentLabel - 1]['coordinates'],
-                                              cc_info[oldLabel - 1]['coordinates'])
-                        if disRez == 1:
-                            labels[location] = currentLabel
-                        elif disRez == 2:
-                            labels[location] = oldLabel
+        self.conflict_mat = self.conflict_mat + self.packet_infos[current_id].packet_mat
 
-    cc_info[cc_index]['zconflicts'] = conflicts
-    cc_info[cc_index]['points'] = points
+    def packet_conflict_solver(self):
+        (conflict_x, conflict_y) = np.where(self.conflict_mat > 1)
 
-    return labels
+        for x, y in zip(conflict_x, conflict_y):
+            packet_ids = []
+            for current_id, packet_info in enumerate(self.packet_infos):
+                if self.packet_infos[current_id].packet_mat[x, y] == 1:
+                    packet_ids.append(current_id)
+
+            max = 0
+            max_id = None
+            for packet_id in packet_ids:
+                pc = self.packet_infos[packet_id].center_coords
+                dist = euclidean_point_distance_scale_fast(np.array([x, y]), np.array(pc), scale=self.scale)
+                if self.data[pc] / dist > max:
+                    max = self.data[pc] / dist
+                    max_id = packet_id
+
+            if max_id is not None:
+                self.labels_data[x, y] = max_id + 1
+
+        for current_id, packet_info in enumerate(self.packet_infos):
+            current_label = current_id + 1
+
+            (points_x, points_y) = np.where(self.labels_data == current_label)
+            points = []
+            for (x, y) in zip(points_x, points_y):
+                points.append((x, y))
+
+            self.packet_infos[current_id].packet_points = points
+            self.packet_infos[current_id].updated_packet_points = copy.deepcopy(points)
+
+    def merge_labels(self):
+        for current_id in range(len(self.packet_infos) - 1, -1, -1):
+            current_label = self.packet_infos[current_id].finish_label
+
+            while True:
+                conflict_center_str = None
+                for conflict_center_string in list(self.packet_infos[current_id].updated_conflict_dict.keys()):
+                    if self.packet_infos[current_id].updated_conflict_dict[conflict_center_string] is not None:
+                        conflict_center_str = conflict_center_string
+                        break
+
+                if conflict_center_str is None:
+                    break
+
+                conflict_center = eval(conflict_center_str)
+
+                conflict_id = self.find_info_id_by_center(conflict_center)
+                conflict_label = self.packet_infos[conflict_id].finish_label
+
+                # safety, conflict id not found, should never get here
+                if conflict_id is None:
+                    break
+
+                # if no conflict exists between current and conflict packet
+                if self.packet_infos[current_id].updated_conflict_dict[conflict_center_str] is None:
+                    break
+
+                # the conflict packet was already absorbed by another packet, skip it
+                if self.packet_infos[current_id].parent_center_coords is not None:
+                    break
+
+                conflicts_coords = self.packet_infos[current_id].updated_conflict_dict[f"{conflict_center}"]
+
+                max_conflict_value = 0
+                for conflict_coord in conflicts_coords:
+                    if self.data[tuple(conflict_coord)] > max_conflict_value:
+                        max_conflict_value = self.data[tuple(conflict_coord)]
 
 
-def disambiguate(array, questionPoint, clusterCenter1, clusterCenter2):
-    """
-    Disambiguation of a point from the spectrogram based on the parameters
-    :param array: matrix - an array of the power values, representing the spectrogram
-    :param questionPoint: tuple - the coordinates (x, y) in the spectrogram toward which the expansion is going
-    :param clusterCenter1: tuple - the coordinates (x, y) of the power value of the first oscillation packet
-    :param clusterCenter2: tuple - the coordinates (x, y) of the power value of the second oscillation packet
+                if self.packet_infos[current_id].peak < self.packet_infos[conflict_id].peak:
+                    if self.packet_infos[current_id].peak - max_conflict_value < self.merge_factor \
+                            and self.packet_infos[conflict_id].peak - max_conflict_value < self.merge_factor:
+                        self.merged_labels_data[self.merged_labels_data == current_label] = conflict_label
+                        self.update_infos(loser_id=current_id, winner_id=conflict_id)
 
-    :returns : integer - representing the approach to disambiguation
-    """
-    distanceToC1 = euclidean_point_distance(questionPoint, clusterCenter1)
-    distanceToC2 = euclidean_point_distance(questionPoint, clusterCenter2)
+                self.packet_infos[current_id].updated_conflict_dict[conflict_center_str] = None
 
-    c1_pull = array[clusterCenter1] / array[questionPoint] - get_dropoff(array, clusterCenter1) * distanceToC1
-    c2_pull = array[clusterCenter2] / array[questionPoint] - get_dropoff(array, clusterCenter2) * distanceToC2
+        self.calculate_merged_contours()
 
-    if c1_pull > c2_pull:
-        return 1
-    else:
-        return 2
+    def find_info_id_by_center(self, conflict_center):
+        for i in range(len(self.packet_infos)):
+            if self.packet_infos[i].center_coords[0] == conflict_center[0] and self.packet_infos[i].center_coords[1] == conflict_center[1]:
+                return i
+        return None
+
+    def find_info_id_by_start_label(self, label):
+        for i in range(len(self.packet_infos)):
+            if self.packet_infos[i].start_label == label:
+                return i
+        return None
+
+    def update_conflict_dict(self, winner_id, loser_id):
+        winner_conflict_dict = self.packet_infos[winner_id].updated_conflict_dict
+        loser_conflict_dict = self.packet_infos[loser_id].updated_conflict_dict
+
+        winner_conflict_keys = list(winner_conflict_dict.keys())
+        loser_conflict_keys = list(loser_conflict_dict.keys())
+
+        for loser_key in loser_conflict_keys:
+            if loser_key in winner_conflict_keys:
+                if winner_conflict_dict[loser_key] is None:
+                    continue
+                else:
+                    if loser_conflict_dict[loser_key] is None:
+                        continue
+                    else:
+                        winner_conflict_dict[loser_key].extend(loser_conflict_dict[loser_key])
+            else:
+                winner_conflict_dict[loser_key] = loser_conflict_dict[loser_key]
+            loser_conflict_dict[loser_key] = None
+
+    def update_infos(self, loser_id, winner_id):
+        self.packet_infos[loser_id].parent_center_coords = self.packet_infos[winner_id].center_coords
+        self.packet_infos[loser_id].finish_label = self.packet_infos[winner_id].finish_label
+
+        self.packet_infos[winner_id].updated_packet_points.extend(self.packet_infos[loser_id].updated_packet_points)
+
+        # PARENT RECEIVES CONFLICTS OF KID
+        self.update_conflict_dict(winner_id, loser_id)
+
+        # winner gets himself removed from conflicts just in case the loser had him
+        self.packet_infos[winner_id].updated_conflict_dict[f"{self.packet_infos[winner_id].center_coords}"] = None
+
+        # winner gets loser removed from conflicts as it was absorbed
+        self.packet_infos[winner_id].updated_conflict_dict[f"{self.packet_infos[loser_id].center_coords}"] = None
+
+    def reencode_labels(self):
+        # REENCODE LABELS
+        shape = self.merged_labels_data.shape
+        le = LabelEncoder()
+        # ravel removes DataConversionWarning: A column-vector y was passed when a 1d array was expected.
+        self.merged_labels_data = le.fit_transform(self.merged_labels_data.reshape(-1, 1).ravel())
+        self.merged_labels_data = self.merged_labels_data.reshape(shape)
+
+        unique_labels = np.unique(self.merged_labels_data)
+        # shuffle labels for colouring
+        label_list = list(range(1, len(unique_labels)))  # index from one because background remains the same
+        random.shuffle(label_list)
+
+        reencoded_labels = np.zeros_like(self.merged_labels_data)
+        for id, label in enumerate(unique_labels[1:]):  # index from one to not modify background
+            reencoded_labels[self.merged_labels_data == label] = label_list[id]
+
+        self.merged_labels_data = reencoded_labels
+
+    def create_packet_infos(self, packet_centers):
+        # preprocess
+        # create sub-lists of pairs [coordinates, peak value]
+        packet_pairs = np.zeros((len(packet_centers), 3))
+        packet_pairs[:, 0:2] = packet_centers
+        packet_pairs[:, 2] = self.data[packet_centers[:, 0], packet_centers[:, 1]]
+
+        # pairs composed of sub-lists of [tuple coordinates, peak value]
+        # sort by peaks
+        sorted_pairs = packet_pairs[packet_pairs[:, 2].argsort()][::-1]
+        # print(sorted_pairs)
+
+        self.rightest_id = np.argmax(sorted_pairs[:, 1])
+        # self.rightest = (int(sorted_pairs[rightest_id, 0]),int(sorted_pairs[rightest_id, 1]))
+
+        for pair in sorted_pairs:
+            info = PacketInfo()
+            info.center_coords = (int(pair[0]), int(pair[1]))
+            info.peak = pair[2]
+            info.actual_peak = self.actual_data[info.center_coords]
+            self.packet_infos.append(info)
+
+    def calculate_prominences(self):
+        # CALCULATE PROMINENCE
+
+        for id, info in enumerate(self.packet_infos):
+            points2D = np.array(self.packet_infos[id].contour_points)
+
+            self.packet_infos[id].prominence = self.packet_infos[id].peak - np.amax(self.data[points2D[:, 0], points2D[:, 1]])
+            self.packet_infos[id].actual_prominence = self.packet_infos[id].actual_peak - np.amax(self.actual_data[points2D[:, 0], points2D[:, 1]])
+            self.packet_infos[id].inv_prominence = self.packet_infos[id].peak - np.amin(self.data[points2D[:, 0], points2D[:, 1]])
+
+
+    def calculate_contours_and_conflicts(self):
+        # CALCULATE CONTOURS
+        for id, info in enumerate(self.packet_infos):
+            conflicts = {}
+            contour = []
+            temp_matrix = np.zeros_like(self.data)
+
+            points2D = np.array(info.packet_points)
+            temp_matrix[points2D[:, 0], points2D[:, 1]] = 1
+
+            for point in info.packet_points:
+                neighbours = get_valid_neighbours8(point, temp_matrix.shape)
+
+                result = np.any(temp_matrix[neighbours[:, 0], neighbours[:, 1]] == 0)
+
+                if result == True:
+                    contour.append(point)
+
+                    for neighbour in neighbours:
+                        neigh_label = self.labels_data[tuple(neighbour)].astype(int)
+
+                        if neigh_label != 0:
+                            neighb_id = self.find_info_id_by_start_label(neigh_label)
+                            if id != neighb_id:
+                                key = f"{self.packet_infos[neighb_id].center_coords}"
+                                if key in conflicts.keys():
+                                    conflicts[key].append(neighbour)
+                                else:
+                                    conflicts[key] = []
+                                    conflicts[key].append(neighbour)
+
+            self.packet_infos[id].contour_points = contour
+            self.packet_infos[id].conflict_dict = conflicts
+            self.packet_infos[id].updated_conflict_dict = copy.deepcopy(conflicts)
+
+    def calculate_merged_contours(self):
+        for id, info in enumerate(self.packet_infos):
+            if info.parent_center_coords is None:
+                contour = []
+                temp_matrix = np.zeros_like(self.labels_data)
+
+                points2D = np.array(info.updated_packet_points)
+                temp_matrix[points2D[:, 0], points2D[:, 1]] = 1
+
+                for point in info.updated_packet_points:
+                    neighbours = get_valid_neighbours8(point, temp_matrix.shape)
+
+                    result = np.any(temp_matrix[neighbours[:, 0], neighbours[:, 1]] == 0)
+                    if result == True:
+                        contour.append(point)
+
+                self.packet_infos[id].updated_contour_points = np.array(contour)
+            else:
+                self.packet_infos[id].updated_contour_points = np.array(copy.deepcopy(self.packet_infos[id].contour_points))
 
 
