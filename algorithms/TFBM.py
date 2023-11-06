@@ -48,13 +48,19 @@ class PacketInfo:
 
 
 class TFBM:
-    def __init__(self, data, threshold="auto", merge=True, merge_factor=15):
+    def __init__(self, data, threshold="auto", aspect_ratio=1, merge=True, merge_factor=15):
         self.actual_data = np.copy(data)
         self.data = np.copy(data)
         self.conflict_mat = np.zeros_like(self.data, dtype=int)
 
         min_dim = min(self.data.shape[1], self.data.shape[0])
-        self.scale = np.array([min_dim / self.data.shape[0], min_dim / self.data.shape[1]])
+        if aspect_ratio > 1:
+            self.scale = np.array([min_dim / self.data.shape[0] / aspect_ratio, min_dim / self.data.shape[1]])
+        elif aspect_ratio < 1:
+            self.scale = np.array([min_dim / self.data.shape[0], min_dim / self.data.shape[1] * aspect_ratio])
+        elif aspect_ratio == 1:
+            self.scale = np.array([min_dim / self.data.shape[0], min_dim / self.data.shape[1]])
+
 
         self.data = normalize_data_min_max(self.data) * 100
 
@@ -82,7 +88,6 @@ class TFBM:
 
         self.labels_data = np.zeros_like(self.data, dtype=int)
         self.merged_labels_data = np.zeros_like(self.data, dtype=int)
-
 
     def fit(self, verbose=False, timer=False):
         if verbose == True:
