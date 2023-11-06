@@ -49,7 +49,7 @@ def plot_data_result_mask(method_name, data, labelsMatrix, center_coords):
     plt.show()
 
 def TFBM_and_plot(data):
-    tfbm = TFBM(data.T, threshold="auto", merge=True, merge_factor=15)
+    tfbm = TFBM(data.T, threshold="auto", merge=True, aspect_ratio=1, merge_factor=15)
     tfbm.fit(verbose=True, timer=True)
 
     center_coords = [(pi.center_coords[1], pi.center_coords[0]) for pi in tfbm.packet_infos]
