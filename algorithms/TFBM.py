@@ -162,11 +162,13 @@ class TFBM:
         self.packet_infos[current_id].packet_mat[start] = current_label
         self.labels_data[start] = current_label
 
+        neighbours = get_valid_neighbours8(start, self.data.shape)
+        dropoff = np.sqrt(np.sum((self.data[start] - np.amin(self.data[neighbours[:, 0], neighbours[:, 1]])) ** 2))
+
         while expansionQueue:
             point = expansionQueue.popleft()
 
             neighbours = get_valid_neighbours8(point, self.data.shape)
-            dropoff = np.sqrt(np.sum((self.data[point] - np.amax(self.data[neighbours[:, 0], neighbours[:, 1]])) ** 2))
             dist = euclidean_point_distance_scale_fast(np.array(start), np.array(point), scale=self.scale)
             number = dropoff * dist
 
@@ -175,6 +177,7 @@ class TFBM:
 
                 if self.packet_infos[current_id].packet_mat[neighbour] == 0 and number <= self.data[neighbour] <= self.data[point]:
                     expansionQueue.append(neighbour)
+
                     if self.labels_data[neighbour] == 0:
                         self.labels_data[neighbour] = current_label
                     else:
